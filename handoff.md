@@ -206,6 +206,15 @@ visible as a full-page "Failed to load plugins" screen.
 
 ## Current state
 
+- **Pushed** to `github.com/kyssta-exe/CasualProviders`, branch `main`, public. 3 commits at time of
+  writing:
+  - `4b2c31b` CasualProviders: one-click provider setup for the DeepSeek Harness
+  - `574ac0f` Fix browser activation, and add the tests that would have caught it
+  - `5d56e64` Support subscription routes, and fix the three bugs that hid them
+- The local branch was renamed `master` -> `main` to match the remote's default branch. If you re-init,
+  create `main` directly.
+- Installed into `~/.dsh/profiles/web` as a `link:` to this checkout, so `pnpm run build` here is picked
+  up by the next `dsh web` — no reinstall needed while iterating locally.
 - Verified against a live `dsh web`: boots clean, panel renders, full round trip green
   (`configured -> codex route -> defaulted -> removed -> no trace`).
 - The local profile currently has `opencode-go` configured with `OPENCODE_GO_API_KEY` and set as the
