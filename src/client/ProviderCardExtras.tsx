@@ -94,6 +94,18 @@ export function ProviderCardExtras(props: ProviderCardProps): ReactElement | nul
 
   const save = useCallback(async (): Promise<void> => {
     if (curated === undefined || row === undefined) return
+    // A keyless route has nothing to paste; it still needs its profile written.
+    if (curated.auth !== 'key') {
+      setBusy(true)
+      setMessage(undefined)
+      const added = await operations.writeSettings(PI_AI_NAMESPACE, [
+        { op: 'set', path: ['providers', curated.id], value: {} },
+      ], undefined)
+      setBusy(false)
+      setMessage(added.kind === 'written' ? t('saved', { name: curated.label }) : added.message)
+      if (added.kind === 'written') await refresh()
+      return
+    }
     const trimmed = keyValue.trim()
     if (trimmed.length === 0 || !/^[\x21-\x7E]+$/.test(trimmed)) {
       setMessage(t('keyRejected'))
@@ -149,7 +161,13 @@ export function ProviderCardExtras(props: ProviderCardProps): ReactElement | nul
             </Button>
           </form>
         )
-        : null}
+        : !isConfigured
+          ? (
+            <Button disabled={busy} onClick={() => { void save() }} size="sm" variant="primary">
+              {t('addRoute')}
+            </Button>
+          )
+          : null}
       {message !== undefined ? <p className={styles.note}>{message}</p> : null}
       {isConfigured && curated.suggestedModel !== undefined
         ? (

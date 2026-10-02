@@ -21,9 +21,13 @@ import { readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
+import { getBuiltinProviders } from '@earendil-works/pi-ai/providers/all'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
 const BUNDLE = join(ROOT, 'lib', 'client.js')
+
+/** The installed pi-ai provider catalog, which is what dsh's adapter declares. */
+const catalogIds = () => [...getBuiltinProviders()]
 
 /** Specifiers the web shell pre-seeds; a `require` of anything else throws. */
 const PLATFORM_MODULES = new Set([
@@ -248,7 +252,18 @@ function fakeContext() {
         listProviders: async () => ({ ok: true, value: [{ id: 'openai', name: 'OpenAI' }] }),
         listConfigurableProviders: async () => ({
           ok: true,
-          value: [{ provider: 'anthropic', displayName: 'Anthropic', settingsNs: 'llm-pi-ai', settingsPath: ['providers', 'anthropic'] }],
+          // The real adapter declares every installed catalog provider to the
+          // directory (`catalogProviderIds()` is pi-ai's `getBuiltinProviders()`
+          // re-exported), so the fake derives its answer the same way. That
+          // turns "is this curated route still a thing?" into a question
+          // answered against the installed catalog rather than a list that has
+          // to be kept in step by hand.
+          value: catalogIds().map(id => ({
+            provider: id,
+            displayName: id,
+            settingsNs: 'llm-pi-ai',
+            settingsPath: ['providers', id],
+          })),
         }),
       },
       $on: (event, handler) => {
@@ -294,6 +309,19 @@ async function main() {
   assert.ok(Array.isArray(exports.inject), 'the bundle must declare its inject list')
   assert.equal(exports.name, 'casual-providers')
 
+  // The pure write helpers are re-exported so the offline tests can drive the
+  // decision logic without a browser. They must stay side-effect free.
+  for (const helper of [
+    'configureRoute',
+    'maybeAutoSelectDefault',
+    'normalizeApiKey',
+    'removeRoute',
+    'routeYaml',
+    'selectDefault',
+  ]) {
+    assert.equal(typeof exports[helper], 'function', `${helper} must be reachable for testing`)
+  }
+
   assert.deepEqual(
     [...exports.inject].sort(),
     [...EXPECTED_INJECT].sort(),
@@ -303,8 +331,7 @@ async function main() {
   // Every named service has to be reachable on the context, or cordis parks
   // this entry as a pending fiber and the web boot reports a dead entry.
   const { ctx, record } = fakeContext()
-  for (const service of exports.inject) {
-    const reachable = service === 'remote' || service.startsWith('remote.')
+  for (const service of exports.inject) {    const reachable = service === 'remote' || service.startsWith('remote.')
       ? service.split('.').reduce((node, part) => node?.[part], ctx) !== undefined
       : ctx[service] !== undefined
     assert.ok(reachable, `injected service ${service} is not on the context`)
@@ -359,6 +386,16 @@ async function main() {
   assert.equal(typeof injected.refresh, 'function')
   assert.ok(injected.hooks.snapshot, 'the store handle must be passed as the hooks seat')
 
+  // The copy-config fragment must name the route and, for a keyed route, the
+  // same reference the save path writes — otherwise the two disagree about
+  // where the secret belongs.
+  assert.match(exports.routeYaml('openai', 'OPENAI_API_KEY'), /^ {6}openai: \{\}\n {8}apiKeyEnv: OPENAI_API_KEY$/m)
+  assert.match(exports.routeYaml('openai-codex'), /^ {6}openai-codex: \{\}$/m)
+  assert.ok(
+    !exports.routeYaml('openai-codex').includes('apiKeyEnv'),
+    'a keyless route fragment must not name a credential reference',
+  )
+
   const snapshot = injected.hooks.snapshot.getSnapshot()
   assert.equal(snapshot.status, 'idle', 'the panel starts unloaded so an unopened page costs no reads')
 
@@ -378,11 +415,97 @@ async function main() {
   assert.equal(openai?.isDefault, true)
   assert.equal(openai?.keyConfigured, true, 'a stored credential reads as present')
 
+  // Auto-select must never displace a default the user already has: the only
+  // case it acts is a profile with no default at all.
+  const writes = []
+  const spyOperations = {
+    ...injected.operations,
+    writeSettings: async (ns, ops) => {
+      writes.push({ ns, ops })
+      return { kind: 'written', view: { ns, value: {}, revision: 2 } }
+    },
+  }
+  const withDefault = {
+    ...loaded,
+    defaultSelection: { provider: 'anthropic', model: 'claude-fable-5' },
+  }
+  const rowForOpenai = withDefault.rows.find(row => row.provider.id === 'openai')
+  assert.equal(
+    await exports.maybeAutoSelectDefault(spyOperations, withDefault, rowForOpenai),
+    undefined,
+    'an existing default must be left alone',
+  )
+  assert.equal(writes.length, 0, 'nothing may be written when a default already exists')
+
+  const withNoDefault = { ...loaded, defaultSelection: undefined }
+  assert.equal(
+    await exports.maybeAutoSelectDefault(spyOperations, withNoDefault, rowForOpenai),
+    undefined,
+    'with no default, auto-select should succeed',
+  )
+  assert.equal(writes.length, 1, 'auto-select must write exactly once')
+  assert.equal(writes[0].ns, 'agent-default-model')
+  // The ops array was built inside the vm, so `deepStrictEqual` would reject it
+  // on prototype identity. Compare the fields instead.
+  assert.equal(writes[0].ops.length, 2)
+  assert.equal(writes[0].ops[0].op, 'set')
+  assert.deepStrictEqual([...writes[0].ops[0].path], ['provider'])
+  assert.equal(writes[0].ops[0].value, 'openai')
+  assert.equal(writes[0].ops[1].op, 'set')
+  assert.deepStrictEqual([...writes[0].ops[1].path], ['model'])
+  assert.equal(writes[0].ops[1].value, 'gpt-5.4')
+
+  // …and it must be switchable off.
+  writes.length = 0
+  const optedOut = { ...withNoDefault, prefs: { ...withNoDefault.prefs, autoSelectDefault: false } }
+  assert.equal(await exports.maybeAutoSelectDefault(spyOperations, optedOut, rowForOpenai), undefined)
+  assert.equal(writes.length, 0, 'opting out must write nothing')
+
+
   const hidden = loaded.rows.find(row => row.provider.id === 'huggingface')
   assert.equal(hidden, undefined, 'a hidden route leaves the panel')
 
   const pinnedFirst = loaded.rows[0]
   assert.equal(pinnedFirst.provider.id, 'anthropic', 'pins lead the panel')
+
+  // A subscription-backed OAuth-only route must appear as a known, addable row
+  // rather than being absent or inert: it is the one case with nothing to paste,
+  // so "known but no key field" is exactly what makes it easy to get wrong.
+  const codex = loaded.rows.find(row => row.provider.id === 'openai-codex')
+  assert.ok(codex !== undefined, 'an OAuth-only catalog route must be a row')
+  assert.equal(codex.known, true, 'the catalog describes it, so it is known')
+  assert.equal(codex.configured, false, 'no profile is configured yet')
+  assert.equal(codex.keyRef, undefined, 'it must not be given a credential reference')
+  assert.equal(codex.provider.auth, 'signin', 'it authenticates by sign-in, not by key')
+  assert.equal(codex.provider.subscription?.methods.includes('oauth'), true)
+  assert.equal(
+    codex.provider.subscription?.startableFromBrowser,
+    false,
+    'this release exposes no browser surface for the grant, and the catalog must say so',
+  )
+  assert.equal(codex.provider.suggestedModel, 'gpt-5.4', 'it still offers a default model')
+
+  // Every curated route must resolve in the installed catalog, or the panel
+  // offers a row that can never serve.
+  //
+  // The rows are objects the vm sandbox built, so their arrays carry that
+  // realm's Array prototype and `deepStrictEqual` rejects them on prototype
+  // identity even when structurally equal. Spreading into this realm first is
+  // what makes the comparison mean what it looks like it means.
+  const unknown = [...loaded.rows.filter(row => !row.known).map(row => row.provider.id)]
+  assert.deepStrictEqual(unknown, [], `curated routes missing from pi-ai's catalog: ${unknown.join(', ')}`)
+
+  // A route whose auth is not a pasted key must still have a configured
+  // apiKeyRef on the rows that do take one, so the copy-config fragment and the
+  // save path cannot disagree about where the secret belongs.
+  for (const row of loaded.rows) {
+    if (row.provider.auth !== 'key') {
+      assert.equal(row.keyRef, undefined, `${row.provider.id} should name no credential reference`)
+    } else {
+      assert.ok(row.keyRef !== undefined, `${row.provider.id} must name a credential reference`)
+      assert.match(row.keyRef, /^[A-Z][A-Z0-9_]*$/, `${row.provider.id} ref is not a valid credential reference`)
+    }
+  }
 
   console.log('client bundle smoke test: OK')
 }

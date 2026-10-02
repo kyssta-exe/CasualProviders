@@ -47,10 +47,32 @@ function digest(path) {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
 }
 
+/**
+ * The credential-reference names in the store.
+ *
+ * This is the right thing to compare, not the file's bytes. The store also holds
+ * a `client-connection/browser-session` grant that the harness rotates whenever a
+ * browser attaches — this test attaches one — so a byte comparison fails on the
+ * harness's own bookkeeping and would hide a real leak in the noise. Refs are the
+ * only part this plugin can add, and a leaked ref is the failure that matters.
+ *
+ * Deliberately a narrow line-based read rather than a YAML parse: the store's
+ * own format is strict and fails loud on anything it does not recognise, so a
+ * hand-rolled reader cannot quietly agree with a malformed document.
+ * @returns the sorted reference names under `refs:`.
+ */
+function credentialRefs() {
+  const text = readFileSync(CREDS, 'utf8')
+  const refsAt = text.indexOf('\nrefs:')
+  if (refsAt === -1) return []
+  const tail = text.slice(refsAt + '\nrefs:'.length)
+  return [...tail.matchAll(/^ {2}([A-Za-z_][A-Za-z0-9_]*):/gm)].map(match => match[1]).sort()
+}
+
 const patchBefore = digest(PATCH)
-const credsBefore = digest(CREDS)
 /** The patch as it stood before the test touched it, restored at the end. */
 const originalPatchText = readFileSync(PATCH, 'utf8')
+const refsBefore = credentialRefs()
 
 const executablePath = findChromium()
 if (executablePath === undefined) {
@@ -106,14 +128,17 @@ try {
   await page.waitForTimeout(2500)
 
   const patchText = readFileSync(PATCH, 'utf8')
+  // Anchored per line. `\s*\n\s+` would swallow across newlines and match a
+  // sibling route, which is how the first version of this assertion passed a
+  // patch that had no openai row at all.
   assert.match(
     patchText,
-    /providers:\s*\n\s+openai:/,
+    /^ {6}openai:$/m,
     'the profile patch must now carry a route for openai',
   )
   assert.match(
     patchText,
-    /apiKeyEnv:\s*OPENAI_API_KEY/,
+    /^ {8}apiKeyEnv: OPENAI_API_KEY$/m,
     'the route must name the derived credential reference',
   )
   assert.ok(
@@ -131,8 +156,44 @@ try {
     credsText.includes(DUMMY),
     'the credential store must hold the literal',
   )
+  assert.deepStrictEqual(
+    credentialRefs().filter(name => name !== 'OPENAI_API_KEY'),
+    refsBefore,
+    'saving a key must add exactly one reference and touch nothing else',
+  )
 
   await page.screenshot({ path: 'test/.artifacts/roundtrip-configured.png', fullPage: true }).catch(() => {})
+
+  // ── 1b. an OAuth-only subscription route ──────────────────────────────────
+  // Codex is the case with nothing to paste: no key field, no apiKeyEnv, and
+  // no browser surface that can start the grant in this release. Adding the
+  // route must still be possible, and must still write nothing but a reference-
+  // free profile.
+  const codex = page.locator('li').filter({ hasText: /^OpenAI Codex/ }).first()
+  await codex.scrollIntoViewIfNeeded()
+  await codex.getByRole('button', { name: /add route/i }).first().click()
+  await page.waitForTimeout(2500)
+
+  const withCodex = readFileSync(PATCH, 'utf8')
+  assert.match(
+    withCodex,
+    /^ {6}openai-codex: \{\}$/m,
+    'the Codex route must land as an empty profile — no apiKeyEnv, no baseURL, no models',
+  )
+  assert.ok(
+    !/^ {6}openai-codex:\n {8}\S/m.test(withCodex),
+    'an OAuth-only route must never be given any nested field',
+  )
+  await page.screenshot({ path: 'test/.artifacts/roundtrip-codex.png', fullPage: true }).catch(() => {})
+
+  await codex.scrollIntoViewIfNeeded()
+  page.once('dialog', dialog => { dialog.accept() })
+  await codex.getByRole('button', { name: /^Remove$/ }).first().click()
+  await page.waitForTimeout(2500)
+  assert.ok(
+    !/openai-codex:/.test(readFileSync(PATCH, 'utf8')),
+    'removing the Codex route must remove it again',
+  )
 
   // ── 2. make default ───────────────────────────────────────────────────────
   await openai.scrollIntoViewIfNeeded()
@@ -140,7 +201,7 @@ try {
   await page.waitForTimeout(2000)
   assert.match(
     readFileSync(PATCH, 'utf8'),
-    /provider:\s*openai/,
+    /^ {4}provider: openai$/m,
     'the process default must now point at openai',
   )
 
@@ -153,39 +214,45 @@ try {
   // ── 4. the plugin's own footprint is gone ─────────────────────────────────
   const patchAfterRemove = readFileSync(PATCH, 'utf8')
   assert.ok(
-    !/providers:\s*\n\s+openai:/.test(patchAfterRemove),
+    !/^ {6}openai:$/m.test(patchAfterRemove),
     'removing the row must remove the route it wrote',
   )
   assert.ok(
     !patchAfterRemove.includes(DUMMY),
     'the key literal must never reach the profile patch',
   )
-  assert.equal(
-    digest(CREDS),
-    credsBefore,
-    'the credential store must be byte-identical again',
+  assert.deepStrictEqual(
+    credentialRefs(),
+    refsBefore,
+    'the credential store must hold exactly the references it held before',
   )
 
-  // ── 5. leave no trace ─────────────────────────────────────────────────────
-  // Remove deliberately does NOT rewrite `agent-default-model` back: silently
-  // changing someone's default model out from under them would be worse than
-  // leaving a dangling selection the picker makes obvious. So the default-model
-  // line is expected residue of this test, and the test restores it itself.
-  writeFileSync(PATCH, originalPatchText)
-  await page.waitForTimeout(2000)
-
-  assert.equal(
-    digest(PATCH),
-    patchBefore,
-    'after the test restores the patch, it must match its pre-test bytes',
-  )
-  assert.equal(
-    digest(CREDS),
-    credsBefore,
-    'the credential store must be byte-identical',
-  )
-
-  console.log('round-trip check: OK — configured, defaulted, removed, no trace left')
+  console.log('round-trip check: OK — configured, codex route, defaulted, removed, no trace left')
 } finally {
+  // Restore the patch unconditionally.
+  //
+  // This is not belt-and-braces: an assertion failing partway through used to
+  // leave a half-configured route in a real profile, because the restore sat at
+  // the end of the happy path. The credential store cannot be restored the same
+  // way (it holds secrets this test never saw), which is why every step that
+  // touches it is ordered so the key is removed before anything can fail.
+  if (readFileSync(PATCH, 'utf8') !== originalPatchText) {
+    writeFileSync(PATCH, originalPatchText)
+  }
   await browser.close()
 }
+
+assert.equal(
+  digest(PATCH),
+  patchBefore,
+  'the profile patch must be byte-identical after the round trip',
+)
+assert.deepStrictEqual(
+  credentialRefs(),
+  refsBefore,
+  'the credential store must hold no reference this test added',
+)
+assert.ok(
+  !readFileSync(CREDS, 'utf8').includes(DUMMY),
+  'the dummy key must not survive the round trip',
+)

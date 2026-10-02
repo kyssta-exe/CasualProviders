@@ -63,6 +63,22 @@ const NS = 'casual-providers'
 export const name = NS
 
 /**
+ * The pure write helpers, re-exported for the offline tests — which run against
+ * `lib/client.js` and cannot otherwise reach a component that the bundle keeps
+ * private. Nothing in the browser imports these: a value import across a plugin
+ * boundary would break the client's flat module graph, where only seed-table
+ * words resolve.
+ */
+export {
+  configureRoute,
+  maybeAutoSelectDefault,
+  normalizeApiKey,
+  removeRoute,
+  routeYaml,
+  selectDefault,
+} from './QuickSetupPanel.tsx'
+
+/**
  * Required services. The two target seats are declared by
  * `dsh-client-ui-settings-models`' apply, whose activation order relative to
  * this one is not constrained — registration goes through `slots.inject()`,

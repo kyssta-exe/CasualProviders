@@ -46,6 +46,41 @@ export interface CasualProvider {
   readonly suggestedModel?: string
   /** Where the user obtains a key. */
   readonly docsUrl?: string
+  /**
+   * Extra note for a route that also answers to a consumer subscription —
+   * what that subscription buys, and what obtaining the grant actually
+   * requires. `undefined` for ordinary metered routes, which need neither.
+   */
+  readonly subscription?: CasualSubscription
+}
+
+/**
+ * How a route's consumer subscription maps onto the harness.
+ *
+ * This exists because "I pay for ChatGPT / Copilot and want to use that here"
+ * is a different question from "here is my API key", and answering it wrongly
+ * is worse than not answering it: a route whose grant cannot be obtained from
+ * the surface the user is looking at must say so plainly instead of rendering
+ * a button that quietly does nothing.
+ */
+export interface CasualSubscription {
+  /** What the user already pays for. */
+  readonly plan: string
+  /** Which grant methods pi-ai offers for this route. */
+  readonly methods: readonly ('oauth' | 'api_key')[]
+  /**
+   * Whether the browser can *start* that grant today.
+   *
+   * `false` means: the harness Host registers the flow, but no Remote in this
+   * release exposes the authorization seam to the web client (`credentials/*`
+   * reads and writes credential *references* only, and the `account/*`
+   * namespace is the DeepSeek product account, not a provider grant). The route
+   * configuration this plugin writes is still exactly right — a grant that
+   * appears in the credential store under `llm-pi-ai/<route>` authenticates it
+   * with no further configuration — so the honest offer is "add the route",
+   * plus the YAML, plus a plain statement of what is missing.
+   */
+  readonly startableFromBrowser: boolean
 }
 
 /**
@@ -234,28 +269,53 @@ export const CASUAL_PROVIDERS: readonly CasualProvider[] = [
 
   // ── Subscriptions and sign-in ────────────────────────────────────────────
   {
-    id: 'github-copilot',
-    label: 'GitHub Copilot',
-    blurb: 'Uses your existing Copilot subscription through a browser sign-in.',
-    group: 'subscription',
-    auth: 'signin',
-    suggestedModel: 'claude-fable-5',
-  },
-  {
     id: 'openai-codex',
     label: 'OpenAI Codex',
-    blurb: 'Your ChatGPT plan, through a browser sign-in. No API key.',
+    blurb: 'Your ChatGPT plan instead of an API bill. No key to paste.',
     group: 'subscription',
+    // OAuth only — pi-ai ships no api-key method for this route at all, so
+    // there is genuinely nothing to type into a field.
     auth: 'signin',
     suggestedModel: 'gpt-5.4',
+    subscription: {
+      plan: 'ChatGPT Plus / Pro / Business',
+      methods: ['oauth'],
+      // See CasualSubscription.startableFromBrowser: true only where the
+      // harness exposes a grant surface for this route. For Codex in this
+      // release it does not, so the panel offers the route and the YAML
+      // instead of a button that cannot work.
+      startableFromBrowser: false,
+    },
+  },
+  {
+    id: 'github-copilot',
+    label: 'GitHub Copilot',
+    blurb: 'Use a Copilot token, or the subscription through a browser sign-in.',
+    group: 'subscription',
+    auth: 'key',
+    keyHint: 'ghu_… / gho_…',
+    suggestedModel: 'claude-fable-5',
+    docsUrl: 'https://github.com/settings/tokens',
+    subscription: {
+      plan: 'GitHub Copilot',
+      methods: ['oauth', 'api_key'],
+      startableFromBrowser: false,
+    },
   },
   {
     id: 'kimi-coding',
     label: 'Kimi For Coding',
-    blurb: 'Moonshot’s coding plan through a browser sign-in.',
+    blurb: 'Moonshot’s coding plan; a key works as well as the sign-in.',
     group: 'subscription',
-    auth: 'signin',
+    auth: 'key',
+    keyHint: 'sk-…',
     suggestedModel: 'k3',
+    docsUrl: 'https://platform.moonshot.ai',
+    subscription: {
+      plan: 'Kimi For Coding',
+      methods: ['oauth', 'api_key'],
+      startableFromBrowser: false,
+    },
   },
   {
     id: 'opencode-go',

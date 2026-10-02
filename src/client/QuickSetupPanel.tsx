@@ -75,6 +75,28 @@ function freshDraft(): RowDraft {
 export type KeyCheck = { ok: true; key: string } | { ok: false; reason: 'empty' | 'format' }
 
 /**
+ * The profile fragment that configures one route, as the user would paste it.
+ *
+ * `baseURL`, `api`, and `models` are deliberately absent: `pi-ai`'s installed
+ * catalog supplies all three for every route this plugin curates, so a route
+ * needs nothing but a credential reference — and for an OAuth or ambient
+ * route, nothing at all.
+ * @param id - provider route id.
+ * @param apiKeyEnv - the credential reference, or undefined for a keyless route.
+ * @returns YAML text naming the route and its `llm-pi-ai` entry id.
+ */
+export function routeYaml(id: string, apiKeyEnv?: string): string {
+  const reference = apiKeyEnv === undefined ? '' : `\n        apiKeyEnv: ${apiKeyEnv}`
+  return [
+    '- id: llm-pi-ai',
+    '  name: "@deepseek-ai/dsh-llm-pi-ai"',
+    '  config:',
+    '    providers:',
+    `      ${id}: {}${reference}`,
+  ].join('\n')
+}
+
+/**
  * Judge a typed API key on its own field, the same rule the built-in Models
  * page applies: after trimming it must be non-empty and every character must
  * be printable ASCII, which is exactly what an HTTP header value can carry.
@@ -187,6 +209,33 @@ export async function selectDefault(
 }
 
 /**
+ * Point the process default at a route the user just added, when nothing is
+ * selected yet.
+ *
+ * The condition is deliberately narrow: **only when no default exists at all.**
+ * A user who already has a default chose it, and quietly replacing a working
+ * selection because they later added a second provider is the kind of surprise
+ * this plugin has no business committing. The case this exists for is first run —
+ * a fresh profile where the default points at nothing the user can reach, and
+ * where adding one provider is otherwise followed by a second trip to the model
+ * picker.
+ * @param operations - the panel's Host operations.
+ * @param state - the joined snapshot, read for the current selection.
+ * @param row - the row that was just configured.
+ * @returns the failure message, or undefined when nothing needed doing.
+ */
+export async function maybeAutoSelectDefault(
+  operations: CasualOperations,
+  state: QuickSetupState,
+  row: QuickSetupRow,
+): Promise<string | undefined> {
+  if (!state.prefs.autoSelectDefault) return undefined
+  if (state.defaultSelection !== undefined) return undefined
+  if (row.provider.suggestedModel === undefined) return undefined
+  return selectDefault(operations, row)
+}
+
+/**
  * Hide one route from the panel. The route itself is untouched — hiding is a
  * panel preference, not a configuration change.
  * @param operations - the panel's Host operations.
@@ -216,6 +265,12 @@ function RowState({ row, t }: { row: QuickSetupRow; t: Translate }): ReactElemen
   }
   if (row.active) return <><StateDot state="done" /><span className={styles.state}>{t('stateActive')}</span></>
   if (row.configured) return <><StateDot state="done" /><span className={styles.state}>{t('stateReady')}</span></>
+  // A keyless route has no credential to report on, so it has no key state to
+  // print. Calling that "state unavailable" reads as a fault in the panel rather
+  // than a fact about the provider.
+  if (row.keyRef === undefined) {
+    return <><StateDot state="idle" /><span className={styles.state}>{t('stateNoKey')}</span></>
+  }
   if (row.keyConfigured === true) {
     return <><StateDot state="warning" /><span className={styles.state}>{t('stateKeyOnly')}</span></>
   }
@@ -233,6 +288,8 @@ function ProviderRow({
   t,
   onKeyChange,
   onSave,
+  onAddRoute,
+  onCopy,
   onDefault,
   onRemove,
   onHide,
@@ -243,6 +300,8 @@ function ProviderRow({
   t: Translate
   onKeyChange: (value: string) => void
   onSave: () => void
+  onAddRoute: () => void
+  onCopy: () => void
   onDefault: () => void
   onRemove: () => void
   onHide: () => void
@@ -261,7 +320,17 @@ function ProviderRow({
         </span>
       </div>
       <p className={styles.blurb}>{provider.blurb}</p>
-      {provider.auth === 'signin' ? <p className={styles.hint}>{t('signinHint')}</p> : null}
+      {provider.subscription !== undefined
+        ? (
+          <p className={styles.hint}>
+            {t('subscriptionPlan', { plan: provider.subscription.plan })}
+            {' '}
+            {provider.subscription.startableFromBrowser
+              ? t('signinAvailable')
+              : t('signinUnavailable')}
+          </p>
+        )
+        : null}
       {provider.auth === 'ambient' ? <p className={styles.hint}>{t('ambientHint')}</p> : null}
 
       {pastesKey
@@ -275,9 +344,9 @@ function ProviderRow({
               autoComplete="off"
               className={styles.keyInput}
               disabled={busy}
-                  placeholder={provider.keyHint !== undefined && provider.keyHint.length > 0
-                  ? provider.keyHint
-                  : t('keyPlaceholder')}
+              placeholder={provider.keyHint !== undefined && provider.keyHint.length > 0
+                ? provider.keyHint
+                : t('keyPlaceholder')}
               type="password"
               value={draft.keyValue}
               onChange={(event) => { onKeyChange(event.target.value) }}
@@ -287,7 +356,19 @@ function ProviderRow({
             </Button>
           </form>
         )
-        : null}
+        // A keyless route still needs its profile written — `providers: { id: {} }`
+        // is the whole configuration — so it gets an explicit action rather than
+        // no way to be added at all. It cannot share `onSave`: that handler
+        // validates a pasted key and bails when there is none, which is correct
+        // for a key field and a silent no-op on a button that promises to add
+        // the route.
+        : !row.configured
+          ? (
+            <Button disabled={busy} onClick={onAddRoute} size="sm" variant="primary">
+              {t('addRoute')}
+            </Button>
+          )
+          : null}
 
       <div className={styles.actions}>
         {pastesKey && provider.docsUrl !== undefined
@@ -297,6 +378,11 @@ function ProviderRow({
             </a>
           )
           : null}
+        {/* The escape hatch for every row: the exact profile fragment, so a user
+            is never stuck waiting on a surface this release does not have. */}
+        <Button disabled={busy} onClick={onCopy} size="sm" variant="toolbar">
+          {t('copyConfig')}
+        </Button>
         {provider.suggestedModel !== undefined && !row.isDefault
           ? (
             <Button disabled={busy || !row.configured} onClick={onDefault} size="sm" variant="ghost">
@@ -470,7 +556,40 @@ export function QuickSetupPanel(props: QuickSetupProps): ReactElement | null {
                     void run(row.provider.id, row.provider.label, async () =>
                       hideRoute(operations, state.prefs.hidden, row.provider.id), 'saved')
                   }}
+                  onCopy={() => {
+                    patch(row.provider.id, {
+                      message: {
+                        tone: 'ok',
+                        text: `${t('copied')}\n\n${routeYaml(
+                          row.provider.id,
+                          row.provider.auth === 'key' ? rowKeyRef(row) : undefined,
+                        )}`,
+                      },
+                    })
+                    void navigator.clipboard
+                      ?.writeText(routeYaml(
+                        row.provider.id,
+                        row.provider.auth === 'key' ? rowKeyRef(row) : undefined,
+                      ))
+                      .catch(() => {})
+                  }}
                   onKeyChange={(value) => { patch(row.provider.id, { keyValue: value, message: undefined }) }}
+                  onAddRoute={() => {
+                    void (async () => {
+                      patch(row.provider.id, { busy: true, message: undefined })
+                      const failure = await configureRoute(operations, row, undefined)
+                      const auto = failure === undefined
+                        ? await maybeAutoSelectDefault(operations, state, row)
+                        : undefined
+                      patch(row.provider.id, {
+                        busy: false,
+                        ...failure === undefined
+                          ? { message: { tone: 'ok', text: t('saved', { name: row.provider.label }) } }
+                          : { message: { tone: 'error', text: failure } },
+                      })
+                      await refresh()
+                    })()
+                  }}
                   onRemove={() => {
                     if (globalThis.confirm?.(t('remove')) === false) return
                     void run(row.provider.id, row.provider.label, async () =>
@@ -491,10 +610,18 @@ export function QuickSetupPanel(props: QuickSetupProps): ReactElement | null {
                       patch(row.provider.id, { busy: true, message: undefined })
                       const failure = await configureRoute(operations, row, checked.key)
                       if (failure === undefined) {
+                        // A failed auto-select must not undo a successful save, so
+                        // it is reported alongside it rather than replacing it.
+                        const auto = await maybeAutoSelectDefault(operations, state, row)
                         patch(row.provider.id, {
                           busy: false,
                           keyValue: '',
-                          message: { tone: 'ok', text: t('saved', { name: row.provider.label }) },
+                          message: {
+                            tone: auto === undefined ? 'ok' : 'error',
+                            text: auto === undefined
+                              ? t('saved', { name: row.provider.label })
+                              : `${t('saved', { name: row.provider.label })}\n${auto}`,
+                          },
                         })
                         await refresh()
                         return

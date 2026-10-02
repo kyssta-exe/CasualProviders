@@ -1,0 +1,13 @@
+# pnpm 11 requires an explicit decision for every dependency that ships a build
+# script. Both of these arrive only through `@earendil-works/pi-ai`, which this
+# package depends on for exactly one reason: `test/smoke.mjs` reads the
+# installed provider catalog to check that every curated route in `src/catalog.ts`
+# still names a provider that exists. Neither script is needed to run the plugin
+# or to run its tests, so both are declined rather than executed.
+#
+# This file is inert when the package is installed into a dsh profile: pnpm only
+# reads a `pnpm-workspace.yaml` at a workspace root, and there the profile's own
+# workspace file is the one that applies.
+allowBuilds:
+  '@google/genai': false
+  protobufjs: false

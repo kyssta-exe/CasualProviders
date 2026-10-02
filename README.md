@@ -22,13 +22,33 @@ already resolved. It changes nothing else: your routes, your keys, and your
 |---|---|
 | **Models → Quick Setup** | Every curated provider, grouped (frontier labs, fast & affordable, gateways, subscriptions, cloud platforms, regional), each with a one-field API-key input, a *Get a key* link, live state, **Make default**, **Remove**, and **Hide**. |
 | **Models → any provider card** | The same key field inline, so you never have to scroll down to configure the provider you are already looking at. |
-| **`settings.yaml` / profile patch** | Nothing new to hand-write. The panel writes `llm-pi-ai.providers.<id>.apiKeyEnv` and `agent-default-model` through the ordinary settings seam. |
+| **Subscription providers** | OpenAI Codex, GitHub Copilot, and Kimi For Coding, with an **Add route** action for the ones that take no key, and a **Copy config** button that puts the exact YAML on the clipboard. |
+| **Profile patch** | Nothing new to hand-write. The panel writes `llm-pi-ai.providers.<id>.apiKeyEnv` and `agent-default-model` through the ordinary settings seam. |
 
 Twenty-eight providers ship in the catalog, covering OpenAI, Anthropic, Google,
 xAI, DeepSeek, Groq, Cerebras, Mistral, Together, Fireworks, NVIDIA, Hugging
 Face, Baseten, OpenRouter, Vercel AI Gateway, Cloudflare AI Gateway, GitHub
 Copilot, OpenAI Codex, Kimi For Coding, OpenCode Zen, Amazon Bedrock, Google
 Vertex, Azure OpenAI, Moonshot, Z.AI, MiniMax, Xiaomi, and Qwen.
+
+### Using a subscription instead of an API bill
+
+Three routes answer to a plan you may already pay for:
+
+| Route | Plan | What the panel does |
+|---|---|---|
+| **OpenAI Codex** | ChatGPT Plus / Pro / Business | **Add route.** `pi-ai` ships no api-key method for this route at all, so there is nothing to paste — the whole configuration is `providers: { 'openai-codex': {} }`. |
+| **GitHub Copilot** | GitHub Copilot | Paste a token, or add the route and use the subscription. |
+| **Kimi For Coding** | Kimi For Coding | Paste a key, or add the route and use the subscription. |
+
+> **On the OAuth half of those routes, be aware:** in dsh 0.2.0 the harness registers provider OAuth
+> flows on the Host, but **no web surface exposes the authorization seam to the browser** — the
+> credential API is references-only, and the `account/*` namespace is the DeepSeek product account
+> rather than a provider grant. So this panel does not pretend to offer a *Sign in with ChatGPT*
+> button. Adding the route is real and complete; it becomes usable the moment a grant for it exists
+> in the credential store under `llm-pi-ai/openai-codex`. If a later release ships that surface, set
+> `startableFromBrowser: true` in `src/catalog.ts` and add the action — the field is there for exactly
+> that.
 
 ## Install
 
@@ -187,10 +207,12 @@ test/
 
 ## Notes and limits
 
-- **Web only.** The browser half targets the web client (`dsh.client.platform:
-  'web'`). The `tui` / `headless` profiles have no extension slots to join, so
-  there is nothing to add there; configure providers by editing the profile
-  patch as usual.
+- **Web only, dsh 0.2.0+.** The browser half targets the web client
+  (`dsh.client.platform: 'web'`) and binds `configForms`, the settings base
+  service that replaced `settingsScope` in 0.2.0. Against 0.1.x the entry stays
+  parked as pending and the web boot reports a dead entry. The `tui` /
+  `headless` profiles expose no extension slots, so configure providers there by
+  editing the profile patch as usual.
 - **Suggested models are suggestions.** `suggestedModel` was read out of
   `pi-ai@0.85.1`'s catalog. A stale id costs you a model that does not resolve —
   change it in the model picker. Nothing else depends on it.
@@ -208,10 +230,11 @@ test/
   currently the default leaves `agent-default-model` pointing at it. Rewriting
   someone's default model silently would be worse than leaving a selection the
   model picker makes obvious — change it there.
-- **Requires dsh 0.2.0 or newer.** The browser half binds `configForms`, the
-  settings base service that replaced `settingsScope` in 0.2.0. Against 0.1.x
-  the entry stays parked as pending and the web boot reports it as a dead
-  entry.
+- **`autoSelectDefault` only fires when nothing is selected.** When you add the
+  first provider to a profile that has no `agent-default-model` at all, the
+  panel also points the default at it. A default you already have is never
+  touched — replacing a working selection because you later added a second
+  provider is not this plugin's call.
 
 ## License
 
