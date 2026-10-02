@@ -1,0 +1,20 @@
+# The patch layer this package contributes when it is installed into a dsh
+# profile. `dsh plugin --profile <name> add dsh-casual-providers` appends this
+# package to the profile's `dsh.profile.bundles` because `package.json`
+# declares `dsh.bundle`, which is what makes this file a composition layer.
+#
+# The plugin needs exactly one Loader row. Its Host half owns the
+# `casual-providers` settings namespace, and its browser half declares the two
+# Models-page extension seats — both need a Node module at the row, and one
+# row keeps the dual-face package to a single entry.
+#
+# Row order carries no load semantics (activation is service-availability
+# driven), so this row can sit anywhere in the composed tree.
+- insert:
+    - id: casual-providers
+      name: 'dsh-casual-providers'
+      config:
+        quickSetup: true
+        autoSelectDefault: true
+        pinned: []
+        hidden: []
