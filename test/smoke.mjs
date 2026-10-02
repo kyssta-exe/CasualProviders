@@ -158,6 +158,28 @@ function namespaceView(ns, value, revision = 1) {
 }
 
 /**
+ * Services the bundle names in `inject`. Cordis treats an unsatisfied name as
+ * a pending fiber rather than an error, so a typo here does not throw at load
+ * time — it silently leaves the entry inactive and the web boot reports it as
+ * "N entries did not activate". Asserting the list against the services the
+ * shipped client plugins actually provide is the only place that gets caught
+ * before a browser opens.
+ *
+ * Read out of the 0.2.0 client bundles rather than assumed. Note the rename:
+ * the settings base service was `settingsScope` through 0.1.x and is
+ * `configForms` from 0.2.0.
+ */
+const EXPECTED_INJECT = [
+  'slots',
+  'locale',
+  'remote',
+  'remote.credentials',
+  'remote.llm',
+  'remote.settings',
+  'configForms',
+]
+
+/**
  * Build a fake browser cordis context that records what `apply` did.
  * @returns the context plus the recording surfaces the assertions read.
  */
@@ -237,6 +259,9 @@ function fakeContext() {
     settingsScope: {
       describe: () => mirror,
     },
+    configForms: {
+      describe: () => mirror,
+    },
     slots: {
       inject(slot, callback) {
         record.slotInjections.push(slot)
@@ -269,15 +294,22 @@ async function main() {
   assert.ok(Array.isArray(exports.inject), 'the bundle must declare its inject list')
   assert.equal(exports.name, 'casual-providers')
 
+  assert.deepEqual(
+    [...exports.inject].sort(),
+    [...EXPECTED_INJECT].sort(),
+    'inject must name only services the shipped client plugins actually provide',
+  )
+
+  // Every named service has to be reachable on the context, or cordis parks
+  // this entry as a pending fiber and the web boot reports a dead entry.
+  const { ctx, record } = fakeContext()
   for (const service of exports.inject) {
-    assert.ok(
-      ['slots', 'locale', 'remote', 'settingsScope'].includes(service)
-      || service.startsWith('remote.'),
-      `unexpected injected service: ${service}`,
-    )
+    const reachable = service === 'remote' || service.startsWith('remote.')
+      ? service.split('.').reduce((node, part) => node?.[part], ctx) !== undefined
+      : ctx[service] !== undefined
+    assert.ok(reachable, `injected service ${service} is not on the context`)
   }
 
-  const { ctx, record } = fakeContext()
   exports.apply(ctx)
 
   assert.deepEqual(
@@ -307,6 +339,18 @@ async function main() {
   const card = record.registrations.find(r => r.spec.name === 'settings.models.provider-card')
   assert.ok(card, 'the provider-card seat must carry a registration')
   assert.equal(card.spec.key, 'llm-pi-ai', 'the card seat keys on the pi-ai adapter namespace')
+
+  // A route can be authorized either by a pasted reference (a settings write)
+  // or by a completed OAuth sign-in (a record write); both must converge.
+  for (const event of [
+    'settings/document-updated',
+    'credentials/reference-updated',
+    'credentials/record-updated',
+    'llm/adapters-updated',
+  ]) {
+    assert.ok(record.remoteSubscriptions.includes(event), `must refresh on ${event}`)
+  }
+  assert.ok(record.eventSubscriptions.includes('connection/reset'), 'must reset on a dropped connection')
 
   // The panel is a pure function of its props, so its render path can be
   // exercised directly once the registrations are in place.

@@ -75,20 +75,44 @@ pnpm run verify     # typecheck + build + both smoke tests
 pnpm run watch      # rebuild the two bundles on change
 ```
 
-The two smoke tests are worth explaining, because a dsh plugin has failure modes
-a typecheck cannot see:
+`pnpm run verify` runs a typecheck, both bundles, and the two offline smoke
+tests. Two more tests drive a real browser and need a running profile:
 
-- `test/host.mjs` imports the **built** `lib/index.js` the way the Cordis Loader
-  does and asserts it is a function plugin (named exports, *no* default export —
-  a default export makes the Loader discard the namespace), that all four config
-  fields are `volatile()` (the only fields a client may write), and that the
-  page policy registers through an optional `settings` child so the plugin still
-  mounts without Settings.
-- `test/smoke.mjs` evaluates the **built** `lib/client.js` the way the web
+```sh
+dsh web --no-open &                       # copy the URL it prints
+node test/browser.mjs   <url>             # the panel mounts and renders
+node test/roundtrip.mjs <url>             # configure -> default -> remove, no trace
+```
+
+All four are worth having, because a dsh plugin has failure modes a typecheck
+cannot see — and each of these caught a real bug during development:
+
+- **`test/host.mjs`** imports the **built** `lib/index.js` the way the Cordis
+  Loader does and asserts it is a function plugin (named exports, *no* default
+  export — a default export makes the Loader discard the namespace), that all
+  four config fields are `volatile()` (the only fields a client may write), and
+  that the page policy registers through an optional `settings` child so the
+  plugin still mounts without Settings.
+- **`test/smoke.mjs`** evaluates the **built** `lib/client.js` the way the web
   client does — through `window.__ModuleLoader__.load` and its factory closure,
   with the platform seed table stubbed — then drives `apply` against a fake
   cordis context. It fails if the bundle requires anything outside the seed
-  table, which at runtime would throw inside the factory.
+  table, which at runtime would throw inside the factory, and it pins the
+  `inject` list to the services the shipped client plugins actually provide.
+  *This is the test that would have caught the original bug: `settingsScope` was
+  renamed to `configForms` in 0.2.0, and an unsatisfied `inject` name does not
+  throw — cordis parks the fiber and the web boot reports a dead entry.*
+- **`test/browser.mjs`** drives real Chromium against a running profile and
+  asserts the failure screen is *not* what it sees, then that the panel renders
+  with every group heading actually translated. *This caught a panel that
+  mounted cleanly and showed nothing, because nothing triggered its first load,
+  and a heading that rendered the literal `groups.frontier`.*
+- **`test/roundtrip.mjs`** types a dummy key, saves, makes the provider default,
+  removes it, and asserts the profile patch and the credential store return to
+  their pre-test checksums. *This proved the two-store write ordering works and
+  that no key literal ever reaches `cordis.patch.yml`.* It writes to the real
+  harness home and cleans up after itself, so run it against a profile you do
+  not mind touching.
 
 ## How it works
 
@@ -153,6 +177,12 @@ src/
     panel-styles.ts           Stylesheet and class map, injected once.
     locales.ts                en + zh copy.
 cordis.patch.yml              The profile row this bundle contributes.
+test/
+  host.mjs                    Built Host entry, loaded the way the Loader does.
+  smoke.mjs                   Built client bundle, executed the way the browser does.
+  chromium.mjs                Locates the cached Playwright build.
+  browser.mjs                 Real browser: the panel mounts and renders.
+  roundtrip.mjs               Real browser: configure -> default -> remove, no trace.
 ```
 
 ## Notes and limits
@@ -174,6 +204,14 @@ cordis.patch.yml              The profile row this bundle contributes.
   `amazon-bedrock` and `google-vertex` use ambient cloud credentials, so the
   panel deliberately writes no `apiKeyEnv` at all, which is what tells the
   adapter to defer to `pi-ai`'s own discovery.
+- **Remove does not reset your default model.** Removing a provider that is
+  currently the default leaves `agent-default-model` pointing at it. Rewriting
+  someone's default model silently would be worse than leaving a selection the
+  model picker makes obvious — change it there.
+- **Requires dsh 0.2.0 or newer.** The browser half binds `configForms`, the
+  settings base service that replaced `settingsScope` in 0.2.0. Against 0.1.x
+  the entry stays parked as pending and the web boot reports it as a dead
+  entry.
 
 ## License
 

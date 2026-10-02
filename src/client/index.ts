@@ -38,7 +38,6 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings-models/client'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 // Type-only: merges `ctx.remote` and its forwarded-event key face.
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
-import type { SettingsDescribeFace } from '@deepseek-ai/dsh-client-ui-settings/client'
 import { QuickSetupPanel } from './QuickSetupPanel.tsx'
 import type { QuickSetupInjected } from './QuickSetupPanel.tsx'
 import { ProviderCardExtras } from './ProviderCardExtras.tsx'
@@ -57,25 +56,6 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-/**
- * `ctx.settingsScope` is declared by `dsh-client-ui-settings`'s
- * `settings-scope.ts`, which its published `/client` entry does not re-export.
- * Upstream builds see that ambient merge through the monorepo's program-wide
- * compilation; an installed consumer does not, which is why an out-of-repo
- * plugin has to state the shape of the service it consumes. This is a
- * type-only statement about somebody else's service and changes no runtime
- * behavior — the panel uses exactly one member, the shared describe face that
- * every settings consumer derives from.
- */
-declare module '@deepseek-ai/cordis' {
-  interface Context {
-    settingsScope: {
-      /** The shared `settings.describe` face this plugin's store reads through. */
-      describe(): SettingsDescribeFace
-    }
-  }
-}
-
 /** Dictionary namespace owned by this plugin. */
 const NS = 'casual-providers'
 
@@ -87,10 +67,16 @@ export const name = NS
  * `dsh-client-ui-settings-models`' apply, whose activation order relative to
  * this one is not constrained — registration goes through `slots.inject()`,
  * which fires whenever the declaration lands.
+ *
+ * `configForms` is the settings domain's base service and the only one whose
+ * name changed under this plugin's feet: it was `settingsScope` through
+ * 0.1.x and is `ConfigForms` from 0.2.0. A service named in `inject` that
+ * nothing provides is not a warning — the entry simply never activates, and the
+ * web boot reports it as a pending fiber.
  */
 export const inject = [
   'slots', 'locale', 'remote', 'remote.credentials', 'remote.llm', 'remote.settings',
-  'settingsScope',
+  'configForms',
 ]
 
 /**
@@ -108,7 +94,7 @@ export function apply(ctx: ClientContext): void {
   }, 'casual-providers: panel styles')
 
   const operations = createCasualOperations(ctx)
-  const store = new QuickSetupStore(operations, ctx.settingsScope.describe())
+  const store = new QuickSetupStore(operations, ctx.configForms.describe())
   const refresh = (): Promise<void> => store.load()
 
   // The `hooks.snapshot` seat carries the store HANDLE; the renderer binds it
@@ -129,14 +115,18 @@ export function apply(ctx: ClientContext): void {
   })
 
   // Pushed invalidations converge an open panel without polling. The
-  // `settingsScope` injection makes ui-settings activate first, and remote
+  // `configForms` injection makes ui-settings activate first, and remote
   // dispatch preserves listener order, so this listener starts after the
-  // mirror's own refresh and therefore reads a settled view.
+  // mirror's own refresh and therefore reads a settled view. Both credential
+  // events are watched: a provider route can be authorized either by a pasted
+  // reference (a settings write) or by a completed OAuth sign-in (a record
+  // write), and both change what a row can say about its key.
   ctx.effect(() => {
     const refreshIfLoaded = (): void => { store.refreshIfLoaded() }
     const disposers = [
       ctx.remote.$on('settings/document-updated', refreshIfLoaded),
       ctx.remote.$on('credentials/reference-updated', refreshIfLoaded),
+      ctx.remote.$on('credentials/record-updated', refreshIfLoaded),
       ctx.remote.$on('llm/adapters-updated', refreshIfLoaded),
       ctx.on('connection/reset', () => {
         store.reset()

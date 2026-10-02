@@ -49,6 +49,8 @@
     "watch": "tsdown --watch",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node test/host.mjs && node test/smoke.mjs",
+    "test:browser": "node test/browser.mjs",
+    "test:roundtrip": "node test/roundtrip.mjs",
     "verify": "pnpm run typecheck && pnpm run build && pnpm run test",
     "prepublishOnly": "pnpm run verify"
   },
@@ -73,6 +75,7 @@
     "@deepseek-ai/dsh-settings": "0.2.0-rc.2",
     "@tsdown/css": "^0.23.0",
     "@types/react": "~18.3.1",
+    "playwright-core": "^1.63.0",
     "react": "^18.2.0",
     "tsdown": "^0.23.0",
     "typescript": "^5.9.0"

@@ -14,7 +14,7 @@ export const en = {
   panelTitle: 'Quick Setup',
   panelBlurb: 'Pick a provider, paste a key, and it is wired up — endpoints and model lists come from the bundled catalog.',
   loading: 'Loading providers…',
-  dismiss: 'Hide panel',
+  dismiss: 'Hide',
   restore: 'Show panel',
   groupFrontier: 'Frontier labs',
   groupFast: 'Fast and affordable',

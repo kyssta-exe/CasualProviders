@@ -16,12 +16,13 @@
  * be mixed freely.
  */
 
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import type { FormEvent, ReactElement } from 'react'
 import { Button, Input, StateDot } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { SnapshotStore } from '@deepseek-ai/dsh-client-store'
 import type { PropsLocale, PropsRuntime, SlotInjectFace } from '@deepseek-ai/dsh-client-ui-slots'
 import type { QuickSetupKey } from './locales.ts'
+import { groupKey } from './locales.ts'
 import type { CasualOperations } from './operations.ts'
 import type { QuickSetupRow, QuickSetupState } from './store.ts'
 import type { CasualGroup } from '../catalog.ts'
@@ -337,6 +338,16 @@ export function QuickSetupPanel(props: QuickSetupProps): ReactElement | null {
   const state = useSnapshot(value => value)
   const [drafts, setDrafts] = useState<Record<string, RowDraft>>({})
 
+  // The first read happens here, on mount, and nowhere else. It cannot happen
+  // at registration — the panel's whole point is that an unopened Models page
+  // costs no wire reads — and it cannot be left to the pushed invalidations,
+  // because those only refresh a store that has already loaded. Skipping this
+  // effect leaves `status: 'idle'`, which this component renders as nothing:
+  // a plugin that mounts cleanly and silently shows no UI at all.
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
   const patch = useCallback((id: string, next: Partial<RowDraft>): void => {
     setDrafts((current) => ({ ...current, [id]: { ...(current[id] ?? freshDraft()), ...next } }))
   }, [])
@@ -367,7 +378,12 @@ export function QuickSetupPanel(props: QuickSetupProps): ReactElement | null {
     })
   }, [patch, refresh, t])
 
-  if (state.status === 'idle') return null
+  // Nothing is rendered before the first read settles. Rendering the panel body
+  // during `loading` would show an empty catalog *and* the "adapter is not
+  // mounted" notice — both of which are statements about state the Host has not
+  // answered yet, and both of which would be wrong within a few hundred
+  // milliseconds.
+  if (state.status === 'idle' || state.status === 'loading') return null
 
   if (state.status === 'error') {
     return (
@@ -437,7 +453,7 @@ export function QuickSetupPanel(props: QuickSetupProps): ReactElement | null {
         if (groupRows.length === 0) return null
         return (
           <div key={group} className={styles.group}>
-            <h4 className={styles.groupTitle}>{t(`groups.${group}` as QuickSetupKey)}</h4>
+            <h4 className={styles.groupTitle}>{t(groupKey(group))}</h4>
             <ul className={styles.rows}>
               {groupRows.map((row) => (
                 <ProviderRow
